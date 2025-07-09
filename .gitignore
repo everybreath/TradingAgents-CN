@@ -31,6 +31,7 @@ eval_data/
 results/
 logs/
 temp/
+data_cache/
 
 # IDE和编辑器文件
 .vscode/
