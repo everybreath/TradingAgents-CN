@@ -8,12 +8,41 @@ import plotly.express as px
 import pandas as pd
 from datetime import datetime
 
+# 导入导出功能
+from utils.report_exporter import render_export_buttons
+
+# 导入日志模块
+from tradingagents.utils.logging_manager import get_logger
+logger = get_logger('web')
+
 def render_results(results):
     """渲染分析结果"""
 
     if not results:
         st.warning("暂无分析结果")
         return
+
+    # 添加CSS确保结果内容不被右侧遮挡
+    st.markdown("""
+    <style>
+    /* 确保分析结果内容有足够的右边距 */
+    .element-container, .stMarkdown, .stExpander {
+        margin-right: 1.5rem !important;
+        padding-right: 0.5rem !important;
+    }
+
+    /* 特别处理展开组件 */
+    .streamlit-expanderHeader {
+        margin-right: 1rem !important;
+    }
+
+    /* 确保文本内容不被截断 */
+    .stMarkdown p, .stMarkdown div {
+        word-wrap: break-word !important;
+        overflow-wrap: break-word !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
     stock_symbol = results.get('stock_symbol', 'N/A')
     decision = results.get('decision', {})
@@ -41,6 +70,9 @@ def render_results(results):
 
     # 风险提示
     render_risk_warning(is_demo)
+    
+    # 导出报告功能
+    render_export_buttons(results)
 
 def render_analysis_info(results):
     """渲染分析配置信息"""
@@ -63,7 +95,7 @@ def render_analysis_info(results):
 
         with col2:
             llm_model = results.get('llm_model', 'N/A')
-            print(f"🔍 [DEBUG] llm_model from results: {llm_model}")
+            logger.debug(f"🔍 [DEBUG] llm_model from results: {llm_model}")
             model_display = {
                 'qwen-turbo': 'Qwen Turbo',
                 'qwen-plus': 'Qwen Plus',
@@ -81,7 +113,7 @@ def render_analysis_info(results):
 
         with col3:
             analysts = results.get('analysts', [])
-            print(f"🔍 [DEBUG] analysts from results: {analysts}")
+            logger.debug(f"🔍 [DEBUG] analysts from results: {analysts}")
             analysts_count = len(analysts) if analysts else 0
 
             st.metric(
@@ -113,15 +145,32 @@ def render_decision_summary(decision, stock_symbol=None):
 
     with col1:
         action = decision.get('action', 'N/A')
+
+        # 将英文投资建议转换为中文
+        action_translation = {
+            'BUY': '买入',
+            'SELL': '卖出',
+            'HOLD': '持有',
+            '买入': '买入',
+            '卖出': '卖出',
+            '持有': '持有'
+        }
+
+        # 获取中文投资建议
+        chinese_action = action_translation.get(action.upper(), action)
+
         action_color = {
             'BUY': 'normal',
             'SELL': 'inverse',
-            'HOLD': 'off'
+            'HOLD': 'off',
+            '买入': 'normal',
+            '卖出': 'inverse',
+            '持有': 'off'
         }.get(action.upper(), 'normal')
 
         st.metric(
             label="投资建议",
-            value=action.upper(),
+            value=chinese_action,
             help="基于AI分析的投资建议"
         )
 
@@ -160,12 +209,13 @@ def render_decision_summary(decision, stock_symbol=None):
 
     with col4:
         target_price = decision.get('target_price')
-        print(f"🔍 [DEBUG] target_price from decision: {target_price}, type: {type(target_price)}")
-        print(f"🔍 [DEBUG] decision keys: {list(decision.keys()) if isinstance(decision, dict) else 'Not a dict'}")
+        logger.debug(f"🔍 [DEBUG] target_price from decision: {target_price}, type: {type(target_price)}")
+        logger.debug(f"🔍 [DEBUG] decision keys: {list(decision.keys()) if isinstance(decision, dict) else 'Not a dict'}")
 
         # 根据股票代码确定货币符号
         def is_china_stock(ticker_code):
             import re
+
             return re.match(r'^\d{6}$', str(ticker_code)) if ticker_code else False
 
         is_china = is_china_stock(stock_symbol)

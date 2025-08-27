@@ -9,13 +9,20 @@ from typing import Dict, Any, Tuple, List, Optional
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
-from tradingagents.llm_adapters import ChatDashScope
+from tradingagents.llm_adapters import ChatDashScope, ChatDashScopeOpenAI
 
 from langgraph.prebuilt import ToolNode
 
 from tradingagents.agents import *
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.agents.utils.memory import FinancialSituationMemory
+
+# 导入统一日志系统
+from tradingagents.utils.logging_init import get_logger
+
+# 导入日志模块
+from tradingagents.utils.logging_manager import get_logger
+logger = get_logger('agents')
 from tradingagents.agents.utils.agent_states import (
     AgentState,
     InvestDebateState,
@@ -83,25 +90,47 @@ class TradingAgentsGraph:
               self.config["llm_provider"].lower() == "alibaba" or
               "dashscope" in self.config["llm_provider"].lower() or
               "阿里百炼" in self.config["llm_provider"]):
-            self.deep_thinking_llm = ChatDashScope(
+            # 使用 OpenAI 兼容适配器，支持原生 Function Calling
+            logger.info(f"🔧 使用阿里百炼 OpenAI 兼容适配器 (支持原生工具调用)")
+            self.deep_thinking_llm = ChatDashScopeOpenAI(
                 model=self.config["deep_think_llm"],
                 temperature=0.1,
                 max_tokens=2000
             )
-            self.quick_thinking_llm = ChatDashScope(
+            self.quick_thinking_llm = ChatDashScopeOpenAI(
                 model=self.config["quick_think_llm"],
                 temperature=0.1,
                 max_tokens=2000
             )
-            # 为ReAct Agent创建Tongyi LLM（支持工具调用）
-            from langchain_community.llms import Tongyi
-            self.react_llm = Tongyi()
-            # 确保使用正确的通义千问模型名称
-            quick_model = self.config["quick_think_llm"]
-            if quick_model in ["gpt-4o-mini", "o4-mini"]:  # 如果还是默认的OpenAI模型名
-                quick_model = "qwen-turbo"  # 使用通义千问默认模型
-            self.react_llm.model_name = quick_model
-            print(f"📊 [DEBUG] ReAct LLM模型设置为: {quick_model}")
+        elif (self.config["llm_provider"].lower() == "deepseek" or
+              "deepseek" in self.config["llm_provider"].lower()):
+            # DeepSeek V3配置 - 使用支持token统计的适配器
+            from tradingagents.llm_adapters.deepseek_adapter import ChatDeepSeek
+
+
+            deepseek_api_key = os.getenv('DEEPSEEK_API_KEY')
+            if not deepseek_api_key:
+                raise ValueError("使用DeepSeek需要设置DEEPSEEK_API_KEY环境变量")
+
+            deepseek_base_url = os.getenv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com')
+
+            # 使用支持token统计的DeepSeek适配器
+            self.deep_thinking_llm = ChatDeepSeek(
+                model=self.config["deep_think_llm"],
+                api_key=deepseek_api_key,
+                base_url=deepseek_base_url,
+                temperature=0.1,
+                max_tokens=2000
+            )
+            self.quick_thinking_llm = ChatDeepSeek(
+                model=self.config["quick_think_llm"],
+                api_key=deepseek_api_key,
+                base_url=deepseek_base_url,
+                temperature=0.1,
+                max_tokens=2000
+                )
+
+            logger.info(f"✅ [DeepSeek] 已启用token统计功能")
         else:
             raise ValueError(f"Unsupported LLM provider: {self.config['llm_provider']}")
         
@@ -110,6 +139,7 @@ class TradingAgentsGraph:
         # Initialize memories (如果启用)
         memory_enabled = self.config.get("memory_enabled", True)
         if memory_enabled:
+            # 使用单例ChromaDB管理器，避免并发创建冲突
             self.bull_memory = FinancialSituationMemory("bull_memory", self.config)
             self.bear_memory = FinancialSituationMemory("bear_memory", self.config)
             self.trader_memory = FinancialSituationMemory("trader_memory", self.config)
@@ -160,11 +190,11 @@ class TradingAgentsGraph:
         return {
             "market": ToolNode(
                 [
+                    # 统一工具
+                    self.toolkit.get_stock_market_data_unified,
                     # online tools
                     self.toolkit.get_YFin_data_online,
                     self.toolkit.get_stockstats_indicators_report_online,
-                    # 中国股票专用工具
-                    self.toolkit.get_china_stock_data,
                     # offline tools
                     self.toolkit.get_YFin_data,
                     self.toolkit.get_stockstats_indicators_report,
@@ -190,11 +220,8 @@ class TradingAgentsGraph:
             ),
             "fundamentals": ToolNode(
                 [
-                    # online tools
-                    self.toolkit.get_fundamentals_openai,
-                    # 中国股票专用工具
-                    self.toolkit.get_china_stock_data,
-                    self.toolkit.get_china_fundamentals,
+                    # 统一工具
+                    self.toolkit.get_stock_fundamentals_unified,
                     # offline tools
                     self.toolkit.get_finnhub_company_insider_sentiment,
                     self.toolkit.get_finnhub_company_insider_transactions,
@@ -208,12 +235,21 @@ class TradingAgentsGraph:
     def propagate(self, company_name, trade_date):
         """Run the trading agents graph for a company on a specific date."""
 
+        # 添加详细的接收日志
+        logger.debug(f"🔍 [GRAPH DEBUG] ===== TradingAgentsGraph.propagate 接收参数 =====")
+        logger.debug(f"🔍 [GRAPH DEBUG] 接收到的company_name: '{company_name}' (类型: {type(company_name)})")
+        logger.debug(f"🔍 [GRAPH DEBUG] 接收到的trade_date: '{trade_date}' (类型: {type(trade_date)})")
+
         self.ticker = company_name
+        logger.debug(f"🔍 [GRAPH DEBUG] 设置self.ticker: '{self.ticker}'")
 
         # Initialize state
+        logger.debug(f"🔍 [GRAPH DEBUG] 创建初始状态，传递参数: company_name='{company_name}', trade_date='{trade_date}'")
         init_agent_state = self.propagator.create_initial_state(
             company_name, trade_date
         )
+        logger.debug(f"🔍 [GRAPH DEBUG] 初始状态中的company_of_interest: '{init_agent_state.get('company_of_interest', 'NOT_FOUND')}'")
+        logger.debug(f"🔍 [GRAPH DEBUG] 初始状态中的trade_date: '{init_agent_state.get('trade_date', 'NOT_FOUND')}'")
         args = self.propagator.get_graph_args()
 
         if self.debug:
