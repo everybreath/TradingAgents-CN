@@ -15,6 +15,8 @@ __pycache__/
 .env.mongodb*
 frontend
 backend
+.venv
+
 
 # 系统文件
 .DS_Store
@@ -38,6 +40,7 @@ data_cache/
 # 数据缓存目录 (不纳入版本控制)
 cache/
 data/
+web/data/
 dataflows/data_cache/
 tradingagents/dataflows/data_cache/
 finnhub_data/
@@ -45,6 +48,7 @@ enhanced_analysis_reports/
 web/finnhub_data/
 web/results/
 web/eval_results/
+docs/v1.0.0-preview/
 
 # 股票数据缓存文件 (不纳入版本控制)
 *_stock_data_*.txt
